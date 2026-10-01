@@ -51,6 +51,50 @@ const WRAPPER_VALUE_FLAGS: Record<string, readonly string[]> = {
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
+ * Shells. Their own name says nothing about the work, but a shell is a *wrapper*
+ * around exactly one thing: the script operand (`bash deploy.sh`) or the command
+ * string after `-c` (`bash -ic 'ps aux'`). Both are read here rather than guessed,
+ * so the label names what the command actually runs.
+ */
+const SHELL_COMMANDS = new Set(["bash", "sh", "dash", "zsh", "ksh", "ash", "fish"]);
+
+/** A shell flag that carries the command string: `-c`, `-ic`, `-lc`, `-euc`, … */
+const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+
+/** Shell flags whose value is the *next* token, so it is not the script operand. */
+const SHELL_VALUE_FLAGS = new Set(["-o", "+o", "--rcfile", "--init-file", "--startup-file"]);
+
+/** Strip surrounding quotes from a flag value or operand that was quoted. */
+function stripQuotes(token: string): string {
+	return token.replace(/^["']+/, "").replace(/["']+$/, "");
+}
+
+/**
+ * What a shell wrapper actually runs: `bash scripts/deploy.sh --prod` ->
+ * `deploy.sh`, `bash -ic 'ps aux | head'` -> `ps`, `bash -lc "$S/run.sh"` ->
+ * `run.sh`. Returns "" when the shell names nothing knowable (`bash -l`), so the
+ * caller falls through instead of labelling `bash`.
+ */
+function shellProgramName(args: readonly string[], depth: number): string {
+	for (let index = 0; index < args.length; index += 1) {
+		const token = args[index] as string;
+		if (SHELL_COMMAND_FLAG.test(token)) {
+			const payload = stripQuotes(args[index + 1] ?? "");
+			return payload && depth > 0 ? extractProgramName(payload, depth - 1) : "";
+		}
+		if (SHELL_VALUE_FLAGS.has(token)) {
+			index += 1;
+			continue;
+		}
+		if (token === "--" || token.startsWith("-") || ENV_ASSIGNMENT_PATTERN.test(token)) {
+			continue;
+		}
+		return stripQuotes(token).split("/").pop() ?? "";
+	}
+	return "";
+}
+
+/**
  * Shell builtins that give no hint about what a command actually does. A leading
  * `cd /srv/app && git status` should label `git status`, not `cd`.
  */
@@ -105,12 +149,15 @@ function findProgramIndex(tokens: readonly string[]): number {
  *     cd /srv/app && git status --short                         ->  "git"
  *     grep -r pattern /path                                     ->  "grep"
  *     echo "some long message"                                  ->  "echo"
+ *     bash scripts/deploy.sh --prod                             ->  "deploy.sh"
+ *     bash -ic 'ps aux | head'                                  ->  "ps"
+ *     bash -lc "cd /srv/app && ffmpeg -i in.mp4 out.mp4"        ->  "ffmpeg"
  *
  * A leading segment that only sets context (`cd`, `export`, `source`, …) is
  * skipped so the label names the program that does the work. Pipelines stop at
  * the first segment, so a label never describes something merely piped into.
  */
-export function extractProgramName(command: string): string {
+export function extractProgramName(command: string, depth = 1): string {
 	const firstLine =
 		command
 			.split("\n")
@@ -120,12 +167,21 @@ export function extractProgramName(command: string): string {
 	for (const statement of firstLine.split(/\s*(?:\|\||&&|;)\s*/)) {
 		const segment = statement.split(/\s*\|\s*/)[0]?.trim() ?? "";
 		const tokens = segment.split(/\s+/).filter((token) => token.length > 0);
-		const program = tokens[findProgramIndex(tokens)];
+		const programIndex = findProgramIndex(tokens);
+		const program = tokens[programIndex];
 		if (program === undefined) {
 			continue;
 		}
 
 		const programLabel = program.split("/").pop() || program;
+		if (SHELL_COMMANDS.has(programLabel)) {
+			// A shell is a wrapper: name its script, or the program inside `-c`.
+			const inner = shellProgramName(tokens.slice(programIndex + 1), depth);
+			if (inner) {
+				return inner;
+			}
+			continue;
+		}
 		if (NO_IDENTITY_PROGRAMS.has(programLabel)) {
 			continue;
 		}

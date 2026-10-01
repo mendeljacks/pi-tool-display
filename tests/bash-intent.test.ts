@@ -119,6 +119,28 @@ test("extractProgramName returns empty when there is no program to name", () => 
   assert.equal(extractProgramName("export FOO=1"), "");
 });
 
+test("extractProgramName reads through a shell wrapper to the script it runs", () => {
+  assert.equal(extractProgramName("bash scripts/verify-video.sh out.mp4"), "verify-video.sh");
+  assert.equal(extractProgramName("sh /srv/bin/deploy.sh --prod"), "deploy.sh");
+  assert.equal(extractProgramName('bash "$S/assets/run.sh"'), "run.sh");
+  assert.equal(extractProgramName("nohup bash deploy.sh &"), "deploy.sh");
+  assert.equal(extractProgramName("env bash script.sh"), "script.sh");
+});
+
+test("extractProgramName reads the command string a shell is given with -c", () => {
+  assert.equal(extractProgramName("bash -ic 'ps aux | head -3'"), "ps");
+  assert.equal(extractProgramName('bash -c "ffmpeg -i in.mp4 out.mp4"'), "ffmpeg");
+  assert.equal(extractProgramName("bash -lc 'cd /srv/app && git status'"), "git");
+  assert.equal(extractProgramName("zsh -ic pnpm test"), "pnpm");
+});
+
+test("extractProgramName never labels a shell and never recurses without bound", () => {
+  assert.equal(extractProgramName("bash -l"), "");
+  assert.equal(extractProgramName("bash"), "");
+  assert.equal(extractProgramName("bash -o pipefail"), "");
+  assert.equal(extractProgramName('bash -c \'bash -c "ls"\''), "");
+});
+
 test("extractProgramName skips comment lines and blank lines", () => {
   assert.equal(extractProgramName("\n\n# a comment\ngit diff --stat"), "git");
   assert.equal(extractProgramName("# intent: x\ngit diff --stat"), "git");
