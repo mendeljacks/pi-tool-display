@@ -206,10 +206,16 @@ export function shouldInstructBashIntent(config: IntentConfig): boolean {
  * when no change is needed (feature off, renderer not owned, or already present).
  */
 export function buildBashIntentSystemPrompt(
-	systemPrompt: string,
+	systemPrompt: string | undefined,
 	config: IntentConfig,
 ): string | undefined {
 	if (!shouldInstructBashIntent(config)) {
+		return undefined;
+	}
+
+	// Nothing to amend: a launch with no system prompt (or an event shape that
+	// omits it) must not have the guideline injected as its entire prompt.
+	if (typeof systemPrompt !== "string" || systemPrompt.length === 0) {
 		return undefined;
 	}
 
